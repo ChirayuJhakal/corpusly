@@ -1,0 +1,17 @@
+[project]
+name = "corpusly"
+version = "0.1.0"
+description = "A multi-tenant document intelligence platform"
+readme = "README.md"
+authors = [
+    { name = "Chirayu Jhakal" }
+]
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+corpusly = "corpusly:main"
+
+[build-system]
+requires = ["uv_build>=0.12.1,<0.13.0"]
+build-backend = "uv_build"
