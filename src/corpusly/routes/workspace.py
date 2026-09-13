@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from corpusly.repositories.workspaces import workspaces
 from corpusly.repositories.documents import workspaces_and_documents, documents
 from corpusly.models.workspace import WorkspaceRequest, WorkspaceReponse
-from corpusly.models.documents import DocumentsResponse, DocumentRequest, DocumentResponse, DocumentPatch
+from corpusly.models.documents import DocumentsResponse, DocumentRequest, DocumentResponse, Status
 import uuid
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
@@ -25,19 +25,19 @@ def post_workspace(workspace: WorkspaceRequest):
     return { 'workspace': workspaces[workspace_id] }
 
 @router.get('/{workspace_id}/documents', response_model=DocumentsResponse)
-def fetch_document_from_workspace(workspace_id: int):
+def fetch_document_from_workspace(workspace_id: str):
     if workspace_id not in workspaces:
         raise HTTPException(status_code=404, detail='workspace doesnt exist')
     documents_for_workspace = []
     for doc in workspaces_and_documents[workspace_id]:
-        documents_for_workspace.push(documents.get(doc))
+        documents_for_workspace.append(documents.get(doc))
     return { 'documents': documents_for_workspace }
 
-@router.post('/{workspace_id}/documents')
-def add_document_into_workspace(workspace_id: int, document: DocumentRequest):
+@router.post('/{workspace_id}/documents', response_model=DocumentResponse)
+def add_document_into_workspace(workspace_id: str, document: DocumentRequest):
     if workspace_id not in workspaces:
         raise HTTPException(status_code=404, detail='workspace doesnt exist')
     document_id = str(uuid.uuid4())
-    workspaces_and_documents[workspace_id].push(document_id)
-    documents[document_id] = { 'document_id': document_id, 'document_name': document.document_name, 'status': 'recieved' }
-    return { 'message': 'document added', 'document': documents[document_id] }
+    workspaces_and_documents[workspace_id].append(document_id)
+    documents[document_id] = { 'document_id': document_id, 'document_name': document.document_name, 'status': Status.PENDING.value }
+    return { 'document': documents[document_id] }
