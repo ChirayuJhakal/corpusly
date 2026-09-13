@@ -1,29 +1,29 @@
-from pydantic import BaseModel, Field
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import datetime
 
-class Status(Enum):
-    PENDING = 1
-    IN_PROGRESS = 2
-    DONE = 3
+from pydantic import BaseModel
+
 
 class Document(BaseModel):
     document_id: str
-    document_name: str
     workspace_id: str
-    status: Status
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    document_name: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
 
 class DocumentRequest(BaseModel):
     document_name: str
 
+
+class DocumentPatch(BaseModel):
+    document_name: str | None = None
+    status: str | None = None
+
+
 class DocumentsResponse(BaseModel):
     documents: list[Document]
 
+
 class DocumentResponse(BaseModel):
     document: Document
-
-class DocumentPatch(BaseModel):
-    document_name: str
-    status: Status

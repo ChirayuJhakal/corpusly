@@ -4,6 +4,26 @@
 
 ---
 
+## Round 3 — repository layer landed
+
+Closed: **A** (repositories are classes with domain signatures), **B** (`Document.workspace_id`),
+**C** (verified: cross-tenant read *and* write now 404), **G** (`Depends` + `Annotated` aliases),
+**N1** (timestamps minted once in `create`; same doc read 2s apart returns the same `created_at`),
+**N6** (document routes grouped under one resource-shaped router). `workspaces_and_documents` is
+gone. Pagination and partial PATCH both work. `grep` finds no storage access outside
+`repositories/`.
+
+**The URL changed**, forced by the repository signature: `/documents/{id}` →
+`/workspaces/{workspace_id}/documents/{id}`. At week 6 that path segment stops being trusted input
+and becomes a claim verified against the token.
+
+Still open, unchanged: **D** (status is a free string, `model_copy(update=...)` skips validation —
+matters when it becomes an enum), **E** (should clients write `status` at all?), **H**, 200-not-201,
+the globally-unique workspace name, the two error shapes, `WorkspaceReponse`/`doesnt` typos, and
+`main.py` (dead `settings`, no `.env.example`, unsorted imports — ruff flags it).
+
+---
+
 ## Scorecard
 
 **The app boots and serves.** All six endpoints are registered and respond. That was the whole
