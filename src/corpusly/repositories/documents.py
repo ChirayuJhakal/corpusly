@@ -23,8 +23,6 @@ class DocumentRepository:
 
     def get(self, workspace_id: str, document_id: str) -> Document | None:
         document = self._store.get(document_id)
-        # A document owned by another workspace is indistinguishable from one
-        # that does not exist. The caller turns None into a 404, never a 403.
         if document is None or document.workspace_id != workspace_id:
             return None
         return document.model_copy()
@@ -37,7 +35,6 @@ class DocumentRepository:
             for document in self._store.values()
             if document.workspace_id == workspace_id
         ]
-        # Pagination without a deterministic sort returns arbitrary pages.
         matches.sort(key=lambda document: (document.created_at, document.document_id))
         return [document.model_copy() for document in matches[offset : offset + limit]]
 
@@ -53,15 +50,12 @@ class DocumentRepository:
         if existing is None or existing.workspace_id != workspace_id:
             return None
 
-        # updated_at is owned by this layer. Callers never supply it.
         changes: dict[str, object] = {"updated_at": datetime.now(UTC)}
         if document_name is not None:
             changes["document_name"] = document_name
         if status is not None:
             changes["status"] = status
 
-        # Note: model_copy(update=...) does not re-validate. That matters the day
-        # status becomes an enum.
         updated = existing.model_copy(update=changes)
         self._store[document_id] = updated
         return updated
