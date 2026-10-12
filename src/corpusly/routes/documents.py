@@ -61,7 +61,7 @@ def update_document(
         workspace_id,
         document_id,
         document_name=new_document.document_name,
-        status=new_document.status,
+        document_status=new_document.document_status,
     )
     if document is None:
         raise HTTPException(status_code=404, detail="document doesnt exists")

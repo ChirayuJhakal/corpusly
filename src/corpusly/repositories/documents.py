@@ -14,7 +14,7 @@ class DocumentRepository:
             document_id=str(uuid4()),
             workspace_id=workspace_id,
             document_name=document_name,
-            status="pending",
+            document_status="pending",
             created_at=now,
             updated_at=now,
         )
@@ -44,7 +44,7 @@ class DocumentRepository:
         document_id: str,
         *,
         document_name: str | None = None,
-        status: str | None = None,
+        document_status: str | None = None,
     ) -> Document | None:
         existing = self._store.get(document_id)
         if existing is None or existing.workspace_id != workspace_id:
@@ -53,8 +53,8 @@ class DocumentRepository:
         changes: dict[str, object] = {"updated_at": datetime.now(UTC)}
         if document_name is not None:
             changes["document_name"] = document_name
-        if status is not None:
-            changes["status"] = status
+        if document_status is not None:
+            changes["document_status"] = document_status
 
         updated = existing.model_copy(update=changes)
         self._store[document_id] = updated
