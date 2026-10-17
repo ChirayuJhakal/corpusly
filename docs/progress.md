@@ -1,6 +1,6 @@
 # Progress log
 
-Last updated: 2026-10-12. Current stage: **Stage 3, Postgres integration (raw SQL, psycopg 3)**.
+Last updated: 2026-10-17. Current stage: **Stage 3, Postgres integration (raw SQL, psycopg 3)**.
 
 ## Done
 
@@ -20,21 +20,28 @@ Last updated: 2026-10-12. Current stage: **Stage 3, Postgres integration (raw SQ
 
 ### Stage 3 so far
 - **Step 1, done.** Role `corpusly` (LOGIN; no superuser/createdb/createrole). Databases `corpusly` and `corpusly_test`, both owned by `corpusly`. Local `pg_hba.conf` is `trust`, so passwords are not checked locally.
-- **Step 2, in progress.** `db/schema.sql` written: uuid PKs via `gen_random_uuid()`, `timestamptz` with `DEFAULT now()`, `UNIQUE(workspace_name)`, FK `documents.workspace_id` with `ON DELETE CASCADE`, `document_status` ENUM.
+- **Step 2, done (uncommitted).** `db/schema.sql`: uuid PKs via `gen_random_uuid()`, `text` names, `timestamptz` with `DEFAULT now()`, `UNIQUE(workspace_name)`, FK `documents.workspace_id ... ON DELETE CASCADE` (justified: no business need to keep a deleted workspace's documents; the future `credit_ledger` must NOT cascade), column `document_status` of ENUM `document_status_enum`. Re-runnable (drops tables, then the type). Loaded into `corpusly` and `corpusly_test`, owned by `corpusly`. The API field stays `status`; the repository SQL must alias `document_status AS status` (Step 6).
+- **Step 2 gate 3: constraint violations, observed** (SQLSTATE codes are what Step 7 will catch):
 
-## Next: finish Step 2
-1. Add `DROP TYPE IF EXISTS document_status;` after the table drops. Re-running currently fails with `type "document_status" already exists`.
-2. Column rename `status` → `document_status` leaked into the API. The uncommitted changes in `models/documents.py`, `repositories/documents.py` and `routes/documents.py` change the PATCH body key, so clients sending `status` are silently ignored. Either name the column `status` or alias it in repo SQL, then revert those three files (`git restore`).
-3. Add a one-line SQL comment justifying `ON DELETE CASCADE` (consider: the ledger is append-only).
-4. Be ready to defend ENUM vs `text + CHECK` (enum values are hard to remove/rename).
-5. Load into both DBs: `psql -U corpusly -d corpusly -f db/schema.sql`, same for `corpusly_test`. Neither has tables yet.
-6. Gate 3: by hand, insert a bad FK and a NULL name and record the errors. Already observed:
-   - duplicate name → `duplicate key value violates unique constraint "workspaces_workspace_name_key"`
-   - bad status → `invalid input value for enum document_status: "banana"`
-   - over-length (old varchar) → `value too long for type character varying(225)`
+  | Violation | Error | SQLSTATE / psycopg class |
+  |---|---|---|
+  | duplicate `workspace_name` | `duplicate key value violates unique constraint "workspaces_workspace_name_key"` | 23505 `UniqueViolation` |
+  | document with non-existent `workspace_id` | `insert or update on table "documents" violates foreign key constraint "documents_workspace_id_fkey"` | 23503 `ForeignKeyViolation` |
+  | NULL `document_name` / `workspace_name` | `null value in column "document_name" of relation "documents" violates not-null constraint` | 23502 `NotNullViolation` |
+  | status `'banana'` | `invalid input value for enum document_status_enum: "banana"` | 22P02 `InvalidTextRepresentation` |
+  | over-length name (old `varchar(225)`) | `value too long for type character varying(225)` | 22001 `StringDataRightTruncation` |
 
-## Pending: Steps 3–10
-3. **Config:** add `DATABASE_URL` to `Settings`; real value in `.env` (gitignored); commit `.env.example`. Un-comment `settings = Settings()`. Remove `python-dotenv` and `load_dotenv()` (pydantic-settings reads `.env`).
+- **Step 3, mostly done (uncommitted).** `database_url: str` (required) added to `Settings`, value in `.env`; `python-dotenv` and `load_dotenv()` removed (it stays in `uv.lock` as a transitive dependency of pydantic-settings). Observed:
+  - `.env` missing → app fails at import: `ValidationError ... database_url Field required`. That fail-fast is intended.
+  - Shell `DATABASE_URL` set **and** `.env` present → **the shell value wins**. pydantic-settings precedence: init kwargs > environment variables > `.env` file > defaults. (The prediction was that `.env` wins; it doesn't.)
+
+## Next
+1. `.env.example`: replace `DATABASE_URL = ''` with the format plus a placeholder password, `postgresql://corpusly:CHANGE_ME@localhost:5432/corpusly`. An empty string satisfies a required `str`, so the app would start and crash only on the first query.
+2. Move `Settings` / `settings` from `main.py` to `src/corpusly/config.py`. This avoids a circular import once `dependencies.py` needs the URL in Step 5.
+3. Commit Steps 2 and 3.
+4. Step 4: `uv add "psycopg[binary]"`.
+
+## Pending: Steps 4–10
 4. **Driver:** `uv add "psycopg[binary]"`. No ORM.
 5. **Connection lifetime:** pool created/closed in FastAPI `lifespan`. Providers become `yield` dependencies: borrow a connection per request, commit on success, roll back on error, return it to the pool.
 6. **Port repositories:** same signatures. `%s` parameters only (never f-strings), `WHERE workspace_id = %s` on every document query, `RETURNING` for DB-generated ids/timestamps, `updated_at = now()` on UPDATE, `ORDER BY created_at, document_id` for pagination.
