@@ -3,6 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException
 
 from corpusly.dependencies import WorkspaceRepo
+from corpusly.errors import WorkspaceNameTaken
 from corpusly.models.workspace import WorkspaceReponse, WorkspaceRequest
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
@@ -20,6 +21,8 @@ def get_workspace(workspace_id: UUID, workspaces: WorkspaceRepo) -> WorkspaceRep
 def post_workspace(
     workspace: WorkspaceRequest, workspaces: WorkspaceRepo
 ) -> WorkspaceReponse:
-    if workspaces.get_by_name(workspace.workspace_name) is not None:
-        raise HTTPException(status_code=409, detail="Workspace already exists")
-    return WorkspaceReponse(workspace=workspaces.create(workspace.workspace_name))
+    try:
+        created = workspaces.create(workspace.workspace_name)
+    except WorkspaceNameTaken:
+        raise HTTPException(status_code=409, detail="Workspace already exists") from None
+    return WorkspaceReponse(workspace=created)

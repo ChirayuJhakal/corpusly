@@ -1,8 +1,9 @@
 from typing import Any
 from uuid import UUID
 
-from psycopg import Connection
+from psycopg import Connection, errors
 
+from corpusly.errors import WorkspaceNameTaken
 from corpusly.models.workspace import Workspace
 
 
@@ -22,11 +23,14 @@ class WorkspaceRepository:
         self.conn = conn
 
     def create(self, workspace_name: str) -> Workspace:
-        row = self.conn.execute(
-            "INSERT INTO workspaces (workspace_name) VALUES (%s) "
-            "RETURNING workspace_id, workspace_name, created_at, updated_at;",
-            (workspace_name,),
-        ).fetchone()
+        try:
+            row = self.conn.execute(
+                "INSERT INTO workspaces (workspace_name) VALUES (%s) "
+                "RETURNING workspace_id, workspace_name, created_at, updated_at;",
+                (workspace_name,),
+            ).fetchone()
+        except errors.UniqueViolation as exc:
+            raise WorkspaceNameTaken(workspace_name) from exc
         return _to_workspace(row)
 
     def get(self, workspace_id: UUID) -> Workspace | None:
