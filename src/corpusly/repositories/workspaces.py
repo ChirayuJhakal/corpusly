@@ -1,30 +1,46 @@
-from datetime import UTC, datetime
-from uuid import uuid4
+from typing import Any
+from uuid import UUID
+
+from psycopg import Connection
 
 from corpusly.models.workspace import Workspace
 
 
+def _to_workspace(row: dict[str, Any]) -> Workspace:
+    # psycopg returns uuid columns as uuid.UUID; the model (and the API) use str.
+    return Workspace(
+        workspace_id=str(row["workspace_id"]),
+        workspace_name=row["workspace_name"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
 class WorkspaceRepository:
-    def __init__(self, store: dict[str, Workspace]) -> None:
-        self._store = store
+    # conn comes from the pool, which sets row_factory=dict_row, so rows are dicts.
+    def __init__(self, conn: Connection) -> None:
+        self.conn = conn
 
     def create(self, workspace_name: str) -> Workspace:
-        now = datetime.now(UTC)
-        workspace = Workspace(
-            workspace_id=str(uuid4()),
-            workspace_name=workspace_name,
-            created_at=now,
-            updated_at=now,
-        )
-        self._store[workspace.workspace_id] = workspace
-        return workspace
+        row = self.conn.execute(
+            "INSERT INTO workspaces (workspace_name) VALUES (%s) "
+            "RETURNING workspace_id, workspace_name, created_at, updated_at;",
+            (workspace_name,),
+        ).fetchone()
+        return _to_workspace(row)
 
-    def get(self, workspace_id: str) -> Workspace | None:
-        workspace = self._store.get(workspace_id)
-        return workspace.model_copy() if workspace is not None else None
+    def get(self, workspace_id: UUID) -> Workspace | None:
+        row = self.conn.execute(
+            "SELECT workspace_id, workspace_name, created_at, updated_at "
+            "FROM workspaces WHERE workspace_id = %s;",
+            (workspace_id,),
+        ).fetchone()
+        return _to_workspace(row) if row is not None else None
 
     def get_by_name(self, workspace_name: str) -> Workspace | None:
-        for workspace in self._store.values():
-            if workspace.workspace_name == workspace_name:
-                return workspace.model_copy()
-        return None
+        row = self.conn.execute(
+            "SELECT workspace_id, workspace_name, created_at, updated_at "
+            "FROM workspaces WHERE workspace_name = %s;",
+            (workspace_name,),
+        ).fetchone()
+        return _to_workspace(row) if row is not None else None

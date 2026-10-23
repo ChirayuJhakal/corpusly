@@ -1,6 +1,6 @@
 # Progress log
 
-Last updated: 2026-10-19. Current stage: **Stage 3, Postgres integration (raw SQL, psycopg 3)**.
+Last updated: 2026-10-20. Current stage: **Stage 3, Postgres integration (raw SQL, psycopg 3)**.
 
 ## Done
 
@@ -41,22 +41,39 @@ Last updated: 2026-10-19. Current stage: **Stage 3, Postgres integration (raw SQ
   - `with psycopg.connect(...)` without `commit()` → row saved (commits on clean exit, rolls back on exception).
 - **Concept note:** `docs/notes/connections-pools-transactions.md`: one pool per process, one connection per request, one transaction per request. Covers connection cost, MVCC, locks, the aborted-transaction state, pool mechanics and sizing, and the FastAPI mapping. Includes a two-terminal psql exercise and three check questions (not yet answered).
 
-## Current: Step 5, connection lifetime
-| Sub-step | What | File | Status |
-|---|---|---|---|
-| 5.1 | Pool created once per process in `lifespan` | `main.py` | **in progress** |
-| 5.2 | Per-request connection: `yield` dependency borrowing from `request.app.state.pool` inside `with pool.connection()` (commit on success, rollback on exception) | `dependencies.py` | pending |
-| 5.3 | Repository providers depend on the connection provider and pass it to the repositories' `__init__` (bodies unchanged until Step 6); declared with `Depends(..., scope="function")` so the commit happens before the response | `dependencies.py`, repositories | pending |
-| 5.4 | Prove it: one connection per request (dependency cache, `use_cache=True`), commit/rollback behaviour, tests still green | none | pending |
+## Step 5, connection lifetime (5.1–5.2 done; 5.3 merged into Step 6)
+| Sub-step | What | Status |
+|---|---|---|
+| 5.1 | Pool created once per process in `lifespan` (`main.py`): `ConnectionPool(..., min_size=4, max_size=10, open=False)`, `pool.open(wait=True)`, stored as `app.state.db_pool`, `pool.close()` after `yield` | **done** (commit `53c0ebc`) |
+| 5.2 | `get_db_connection(request)` in `dependencies.py`: sync `def` generator, `with request.app.state.db_pool.connection() as conn: yield conn` (commit on clean exit, rollback on exception, connection returned to pool). Alias `ConnectionFromPool = Annotated[Connection, Depends(get_db_connection, scope="function")]` | **done** (uncommitted) |
+| 5.3 | Repository providers take `conn: ConnectionFromPool` and pass it to the repositories | merged into Step 6 (porting repos one at a time keeps the app working) |
+| 5.4 | Prove commit/rollback + same connection for both repos in one request (`use_cache=True`) | folded into Step 6 verification |
 
-**5.1 requirements:**
-- Build `ConnectionPool(settings.database_url, min_size=..., max_size=..., open=False)` **inside** `lifespan` before `yield`, then `pool.open(wait=True)` so a down or misconfigured DB fails startup. Comment the size choice (40 threads, `max_connections` 100, workers × `max_size`).
-- Store it on `app.state.pool`; call `pool.close()` after `yield`.
-- **Current state (uncommitted):** `main.py` has the lifespan skeleton wired into `FastAPI(lifespan=lifespan)`, but the pool is built at **module level** (`conn = ConnectionPool(...)`, min 4 / max 10), so it connects at import time (pytest, scripts) and is never closed. Move it into `lifespan`; also name it `pool`, since it's a pool, not a connection. `asynccontextmanager` is imported from `fastapi.concurrency`; the standard source is `contextlib`.
-- **Verify (gate):** with the server running, `SELECT pid, state, backend_start FROM pg_stat_activity WHERE usename = 'corpusly';` should show `min_size` idle rows; after Ctrl+C, zero. With Postgres stopped (`brew services stop postgresql@17`), startup should fail. `uv run pytest -q` passes without Postgres (`TestClient(app)` without `with` never runs lifespan). Predict each result before checking.
+**Observed:**
+- 5.1: server up → 4 `idle` rows in `pg_stat_activity` (= `min_size`); after Ctrl+C → 0. With the pool built at module level, `pytest` (which never touches the DB) hung 30s and failed with `PoolTimeout: pool initialization incomplete after 30.0 sec` while Postgres was stopped. Moving creation into `lifespan` fixed it: tests pass with no DB, since `TestClient(app)` without `with` never runs lifespan. Also: a closed psycopg pool can't be reopened, so a module-level pool would break a second lifespan run in the same process.
+- 5.2 (scratch debug route returning `pg_backend_pid()`): 10 sequential requests → **4 distinct pids**, each repeating 2–3×, identical to the 4 idle backends in `pg_stat_activity`. So connections are reused, not opened per request, and the pool rotates them. `max_size` is never reached by sequential traffic.
+
+**Pool sizing (correct model):** `max_size=10` = at most 10 requests hold a DB connection at once per process. With the 40-thread threadpool, requests 11–40 wait for a connection (up to `timeout`, 30s, then `PoolTimeout`). Pool `num_workers=3` are background maintenance threads, not query runners. Constraint: workers × `max_size` < `max_connections` (100). The old comment ("10 worker threads per connection") was wrong and has been removed; re-add a correct one-line justification.
+
+**Circular import hit and fixed:** the repositories imported `ConnectionFromPool` from `dependencies.py`, which imports the repositories → `ImportError: cannot import name 'ConnectionFromPool' from partially initialized module 'corpusly.dependencies'`. Root cause is layering: `ConnectionFromPool` is FastAPI wiring (`Depends`), and repositories must not know FastAPI exists. Fix: repositories type `__init__(self, conn: psycopg.Connection)`. Direction: routes → dependencies (composition root) → repositories → models/psycopg. This also makes repositories usable from scripts, tests and the future ingestion worker.
+
+## Current: Step 6, port repositories (one at a time)
+**State (uncommitted, mid-edit):** both repositories now take `psycopg.Connection`; both providers in `dependencies.py` pass `conn`; the in-memory stores are removed. The app imports cleanly. **The bodies are not working SQL yet.** **Tests currently fail (2 failed):** `tests/conftest.py` overrides still build the repositories with dicts (`WorkspaceRepository(_workspace_store_test)`), and the repositories now call `.execute()` on them → `AttributeError: 'dict' object has no attribute 'execute'`. Expected: the in-memory test fixture no longer fits the SQL repositories. It gets reworked in Step 9 (tests against `corpusly_test`). Until then, verify Step 6 manually with curl + psql.
+
+**6a: `WorkspaceRepository`, do first.** Open issues in the current draft:
+1. `conn.execute(...)` returns a cursor; call `.fetchone()` to get the row.
+2. `create` returns the raw result; it must build a `Workspace`. `get`/`get_by_name` call `.model_copy()` on a non-Pydantic object. Copy-on-read is no longer needed (every read builds a fresh object).
+3. `RETURNING *`: list columns explicitly.
+4. Convert `workspace_id` `UUID` → `str` before building the model (or use `row_factory=dict_row` and convert).
+5. Remove the leftover `uuid4` / `datetime` imports. Postgres owns ids and timestamps.
+6. **Gotcha to decide:** `GET /workspaces/abc`. Comparing a non-UUID string to a `uuid` column raises 22P02 `InvalidTextRepresentation` → 500, and it aborts the request's transaction. In memory it was a 404. Decide where the fix belongs (route, repository or model) and why.
+
+**6a verify:** POST then GET; row visible in psql; **restart server and GET again** (persistence); duplicate name → 409; random valid UUID → 404; `abc` → (your answer).
+
+**6b: `DocumentRepository`, after 6a.** Its draft is also half-changed (`RETURNING *`, cursor not row); finish 6a first. Requirements: `WHERE workspace_id = %s` on every query (tenant scoping), `document_status AS status` alias, `UUID` → `str` for both ids, `updated_at = now()` on UPDATE, `ORDER BY created_at, document_id LIMIT %s OFFSET %s`. A partial PATCH (only name, only status) must not overwrite the other field. Then verify that `POST /workspaces/{id}/documents` (which uses both repos) gets one connection, and that a raised error rolls back.
 
 ## Pending: Steps 6–10
-6. **Port repositories:** same signatures. `%s` parameters only (never f-strings), `WHERE workspace_id = %s` on every document query, `RETURNING` for DB-generated ids/timestamps, `updated_at = now()` on UPDATE, `ORDER BY created_at, document_id` for pagination. Alias `document_status AS status`; convert `UUID` → `str`.
+6. **Port repositories** (in progress, see above): same signatures. `%s` parameters only (never f-strings), `WHERE workspace_id = %s` on every document query, `RETURNING` for DB-generated ids/timestamps, `updated_at = now()` on UPDATE, `ORDER BY created_at, document_id` for pagination. Alias `document_status AS status`; convert `UUID` → `str`.
 7. **Errors:** `UniqueViolation` → domain error → 409; the route's check-then-insert becomes redundant. Bad status → 422, not 500. Remember a failed statement aborts the transaction: map the error and let the request fail.
 8. **Seam check:** `git diff --stat`. Only repositories, `dependencies.py`, `main.py` (lifespan) and config should change.
 9. **Tests on `corpusly_test`:** truncate tables between tests. Existing tests must pass unchanged.
@@ -67,7 +84,6 @@ Out of scope for this stage: SQLAlchemy/Alembic, extra indexes (week 4), Docker 
 ## Open items
 - Repo is public; `CLAUDE.md` and `docs/week-02-review.md` are tracked. Decide on visibility.
 - Known leftovers: `POST /workspaces` returns 200 (not 201) and 307s without the trailing slash; `WorkspaceReponse` typo; ruff import-sort warning in `main.py`.
-- Uncommitted: `docs/notes/connections-pools-transactions.md`.
 - Commits must use `Chirayu Jhakal <jhakalchirayu@gmail.com>`. Never use the work account.
 
 ## Run

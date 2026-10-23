@@ -1,15 +1,19 @@
-from fastapi import FastAPI, Request
-from contextlib import asynccontextmanager
-from corpusly.routes import workspace, documents
 import uuid
-from corpusly.config import settings
+from contextlib import asynccontextmanager
 
+from fastapi import FastAPI, Request
+from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
+
+from corpusly.config import settings
+from corpusly.routes import documents, workspace
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # startup: runs once, before the first request
-    pool = ConnectionPool(conninfo = settings.database_url, min_size = 4, max_size = 10, open=False) # minimum 4 connections, max 10 connections, each connection will have 10 worker threads, so total 100 threads can be used for db operations.
+    # row_factory=dict_row: every pooled connection returns rows as dicts keyed by column name.
+    pool = ConnectionPool(conninfo = settings.database_url, min_size = 4, max_size = 10, open=False, kwargs={"row_factory": dict_row})
     pool.open(wait=True) # open the pool and wait for it to be ready
     app.state.db_pool = pool
     yield                       # the app serves requests while paused here

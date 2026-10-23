@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from fastapi import APIRouter, HTTPException, Query
 
 from corpusly.dependencies import DocumentRepo, WorkspaceRepo
@@ -13,7 +15,7 @@ router = APIRouter(prefix="/workspaces/{workspace_id}/documents", tags=["documen
 
 @router.get("/")
 def fetch_documents_from_workspace(
-    workspace_id: str,
+    workspace_id: UUID,
     workspaces: WorkspaceRepo,
     documents: DocumentRepo,
     limit: int = Query(default=50, ge=1, le=100),
@@ -28,7 +30,7 @@ def fetch_documents_from_workspace(
 
 @router.post("/")
 def add_document_into_workspace(
-    workspace_id: str,
+    workspace_id: UUID,
     document: DocumentRequest,
     workspaces: WorkspaceRepo,
     documents: DocumentRepo,
@@ -42,7 +44,7 @@ def add_document_into_workspace(
 
 @router.get("/{document_id}")
 def fetch_document(
-    workspace_id: str, document_id: str, documents: DocumentRepo
+    workspace_id: UUID, document_id: UUID, documents: DocumentRepo
 ) -> DocumentResponse:
     document = documents.get(workspace_id, document_id)
     if document is None:
@@ -52,8 +54,8 @@ def fetch_document(
 
 @router.patch("/{document_id}")
 def update_document(
-    workspace_id: str,
-    document_id: str,
+    workspace_id: UUID,
+    document_id: UUID,
     new_document: DocumentPatch,
     documents: DocumentRepo,
 ) -> DocumentResponse:

@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from fastapi import APIRouter, HTTPException
 
 from corpusly.dependencies import WorkspaceRepo
@@ -7,7 +9,7 @@ router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
 
 @router.get("/{workspace_id}")
-def get_workspace(workspace_id: str, workspaces: WorkspaceRepo) -> WorkspaceReponse:
+def get_workspace(workspace_id: UUID, workspaces: WorkspaceRepo) -> WorkspaceReponse:
     workspace = workspaces.get(workspace_id)
     if workspace is None:
         raise HTTPException(status_code=404, detail="workspace not found")

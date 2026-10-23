@@ -1,61 +1,81 @@
-from datetime import UTC, datetime
-from uuid import uuid4
+from typing import Any
+from uuid import UUID
+
+from psycopg import Connection
 
 from corpusly.models.documents import Document
 
 
+def _to_document(row: dict[str, Any]) -> Document:
+    # psycopg returns uuid columns as uuid.UUID; the model (and the API) use str.
+    # The column is document_status; every query aliases it back to the API's `status`.
+    return Document(
+        document_id=str(row["document_id"]),
+        workspace_id=str(row["workspace_id"]),
+        document_name=row["document_name"],
+        status=row["status"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
 class DocumentRepository:
-    def __init__(self, store: dict[str, Document]) -> None:
-        self._store = store
+    # conn comes from the pool, which sets row_factory=dict_row, so rows are dicts.
+    def __init__(self, conn: Connection) -> None:
+        self.conn = conn
 
-    def create(self, workspace_id: str, document_name: str) -> Document:
-        now = datetime.now(UTC)
-        document = Document(
-            document_id=str(uuid4()),
-            workspace_id=workspace_id,
-            document_name=document_name,
-            status="pending",
-            created_at=now,
-            updated_at=now,
-        )
-        self._store[document.document_id] = document
-        return document
+    def create(self, workspace_id: UUID, document_name: str) -> Document:
+        row = self.conn.execute(
+            "INSERT INTO documents (workspace_id, document_name) VALUES (%s, %s) "
+            "RETURNING document_id, workspace_id, document_name, "
+            "document_status AS status, created_at, updated_at;",
+            (workspace_id, document_name),
+        ).fetchone()
+        return _to_document(row)
 
-    def get(self, workspace_id: str, document_id: str) -> Document | None:
-        document = self._store.get(document_id)
-        if document is None or document.workspace_id != workspace_id:
-            return None
-        return document.model_copy()
+    def get(self, workspace_id: UUID, document_id: UUID) -> Document | None:
+        # Tenant scoping is in the WHERE clause: another workspace's document is
+        # simply not found, so the route returns 404.
+        row = self.conn.execute(
+            "SELECT document_id, workspace_id, document_name, "
+            "document_status AS status, created_at, updated_at "
+            "FROM documents WHERE workspace_id = %s AND document_id = %s;",
+            (workspace_id, document_id),
+        ).fetchone()
+        return _to_document(row) if row is not None else None
 
     def list_for_workspace(
-        self, workspace_id: str, limit: int, offset: int
+        self, workspace_id: UUID, limit: int, offset: int
     ) -> list[Document]:
-        matches = [
-            document
-            for document in self._store.values()
-            if document.workspace_id == workspace_id
-        ]
-        matches.sort(key=lambda document: (document.created_at, document.document_id))
-        return [document.model_copy() for document in matches[offset : offset + limit]]
+        # document_id breaks ties: rows inserted in one transaction share created_at,
+        # and without a total order LIMIT/OFFSET pages can skip or repeat rows.
+        rows = self.conn.execute(
+            "SELECT document_id, workspace_id, document_name, "
+            "document_status AS status, created_at, updated_at "
+            "FROM documents WHERE workspace_id = %s "
+            "ORDER BY created_at, document_id LIMIT %s OFFSET %s;",
+            (workspace_id, limit, offset),
+        ).fetchall()
+        return [_to_document(row) for row in rows]
 
     def update(
         self,
-        workspace_id: str,
-        document_id: str,
+        workspace_id: UUID,
+        document_id: UUID,
         *,
         document_name: str | None = None,
         status: str | None = None,
     ) -> Document | None:
-        existing = self._store.get(document_id)
-        if existing is None or existing.workspace_id != workspace_id:
-            return None
-
-        changes: dict[str, object] = {"updated_at": datetime.now(UTC)}
-        if document_name is not None:
-            changes["document_name"] = document_name
-        if status is not None:
-            changes["status"] = status
-
-        updated = existing.model_copy(update=changes)
-        self._store[document_id] = updated
-        return updated
+        # One statement for a partial update: COALESCE keeps the current value when
+        # the field was not sent (None). No row matched -> wrong id or other tenant.
+        row = self.conn.execute(
+            "UPDATE documents SET "
+            "document_name = COALESCE(%s, document_name), "
+            "document_status = COALESCE(%s::document_status_enum, document_status), "
+            "updated_at = now() "
+            "WHERE workspace_id = %s AND document_id = %s "
+            "RETURNING document_id, workspace_id, document_name, "
+            "document_status AS status, created_at, updated_at;",
+            (document_name, status, workspace_id, document_id),
+        ).fetchone()
+        return _to_document(row) if row is not None else None

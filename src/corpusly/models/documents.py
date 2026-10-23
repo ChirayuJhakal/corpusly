@@ -1,13 +1,14 @@
 from datetime import datetime
 
 from pydantic import BaseModel
+from typing import Literal
 
 
 class Document(BaseModel):
     document_id: str
     workspace_id: str
     document_name: str
-    status: str
+    status: Literal["pending", "processing", "ready", "failed"] 
     created_at: datetime
     updated_at: datetime
 
@@ -18,7 +19,7 @@ class DocumentRequest(BaseModel):
 
 class DocumentPatch(BaseModel):
     document_name: str | None = None
-    status: str | None = None
+    status: Literal["pending", "processing", "ready", "failed"] | None = None
 
 
 class DocumentsResponse(BaseModel):
